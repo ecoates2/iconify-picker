@@ -6,14 +6,14 @@ Astro-powered site that showcases the `iconify-picker` web component.
 
 ```bash
 pnpm install
-pnpm run dev -- --host
+pnpm run dev
 ```
 
 ## Build + preview
 
 ```bash
 pnpm run build
-pnpm run preview -- --host
+pnpm run preview
 ```
 
 Notes
