@@ -3,7 +3,43 @@
  * Zero-dependency, framework-agnostic icon picker
  */
 
-const API = 'https://api.iconify.design'
+const HOSTS = [
+  'https://api.iconify.design',
+  'https://api.simplesvg.com',
+  'https://api.unisvg.com',
+]
+
+const remote = { host: 0, pending: new Map(), json: new Map() }
+
+const readPath = async path => {
+  const order = HOSTS.map((_, i) => HOSTS[(remote.host + i) % HOSTS.length])
+  const data = await order.reduce(async (prev, host) => {
+    const found = await prev
+    if (found) return found
+    const res = await fetch(`${host}${path}`).catch(() => null)
+    remote.host = HOSTS.indexOf(host)
+    if (!res?.ok) {
+      remote.host = (remote.host + 1) % HOSTS.length
+      return null
+    }
+    return res.json()
+  }, Promise.resolve(null))
+  remote.pending.delete(path)
+  if (data) remote.json.set(path, data)
+  return data
+}
+
+const loadPath = path => {
+  const cached = remote.json.get(path)
+  if (cached) return cached
+  const pending = remote.pending.get(path)
+  if (pending) return pending
+  const job = readPath(path)
+  remote.pending.set(path, job)
+  return job
+}
+
+const apiHost = () => HOSTS[remote.host]
 
 class IconifyPicker extends HTMLElement {
   static observedAttributes = [
@@ -34,7 +70,7 @@ class IconifyPicker extends HTMLElement {
   constructor() {
     super()
     this.attachShadow({ mode: 'open' })
-    this.cache = new Map()
+    this._iconsReq = 0
     this.#initState()
     this.shadowRoot.innerHTML = this.#template()
     this.#bindEvents()
@@ -282,10 +318,8 @@ class IconifyPicker extends HTMLElement {
   }
 
   async #loadCollections() {
-    const res = await fetch(`${API}/collections`)
-    if (!res.ok) return this.state.error = 'Failed to load collections'
-
-    const data = await res.json()
+    const data = await loadPath('/collections')
+    if (!data) return this.state.error = 'Failed to load collections'
     const collections = Object.entries(data)
       .map(([prefix, info]) => ({ prefix, name: info.name || prefix, total: info.total || 0 }))
       .sort((a, b) => a.name.localeCompare(b.name))
@@ -312,29 +346,20 @@ class IconifyPicker extends HTMLElement {
     const { currentCollection, searchTerm } = this.state
     if (!currentCollection) return
 
-    const key = `${currentCollection}:${searchTerm}`
-    if (this.cache.has(key)) {
-      this.state.icons = this.cache.get(key)
+    const req = ++this._iconsReq
+    const term = searchTerm.toLowerCase()
+    this.state.error = null
+    this.state.loading = true
+    const data = await loadPath(`/list-icons?prefix=${currentCollection}`)
+    if (req !== this._iconsReq) return
+    if (!data?.icons) {
+      this.state.loading = false
+      this.state.error = 'Failed to load icons'
       return
     }
 
-    this.state.loading = true
-    const res = await fetch(`${API}/collection?prefix=${currentCollection}`)
-
-    if (!res.ok) {
-      this.state.loading = false
-      return this.state.error = 'Failed to load icons'
-    }
-
-    const data = await res.json()
-    let icons = data.uncategorized || Object.values(data.categories || {}).flat() || []
-
-    if (searchTerm) {
-      const term = searchTerm.toLowerCase()
-      icons = icons.filter(n => n.toLowerCase().includes(term))
-    }
-
-    this.cache.set(key, icons)
+    const icons = data.icons.filter(name => !term || name.toLowerCase().includes(term))
+    if (req !== this._iconsReq) return
     this.state.icons = icons
     this.state.loading = false
   }
@@ -383,7 +408,7 @@ class IconifyPicker extends HTMLElement {
       const full = `${currentCollection}:${name}`
       const sel = selectedIcon === full ? 'selected' : ''
       return `<div class="icon ${sel}" part="icon" data-name="${name}">
-        <img src="${API}/${currentCollection}/${name}.svg?height=24" part="icon-image" alt="${name}">
+        <img src="${apiHost()}/${currentCollection}/${name}.svg?height=24" part="icon-image" alt="${name}">
         <span class="name" part="icon-name">${name}</span>
       </div>`
     }).join('')
@@ -407,7 +432,7 @@ class IconifyPicker extends HTMLElement {
     if (!selectedIcon) return el.innerHTML = ''
 
     const name = selectedIcon.split(':')[1]
-    el.innerHTML = `<span>${selectedIcon}</span><img src="${API}/${currentCollection}/${name}.svg?height=24" alt="${name}">`
+    el.innerHTML = `<span>${selectedIcon}</span><img src="${apiHost()}/${currentCollection}/${name}.svg?height=24" alt="${name}">`
   }
 
   async #selectIcon(name) {
@@ -416,7 +441,7 @@ class IconifyPicker extends HTMLElement {
     this.state.selectedIcon = iconName
 
     // Fetch SVG
-    const res = await fetch(`${API}/${currentCollection}/${name}.svg`)
+    const res = await fetch(`${apiHost()}/${currentCollection}/${name}.svg`)
     const svg = await res.text()
 
     const detail = { iconName, collection: currentCollection, name, svg }
